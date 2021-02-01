@@ -1,0 +1,273 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "from numpy.ma import masked_values as mv\n",
+    "import gsw\n",
+    "import xarray as xr\n",
+    "import pandas as pd\n",
+    "import os.path as op\n",
+    "from datetime import datetime, timedelta\n",
+    "from scipy.interpolate import PchipInterpolator as pchip\n",
+    "from scipy.interpolate import Akima1DInterpolator as akima\n",
+    "from scipy.signal import medfilt\n",
+    "import dask.array as dsar\n",
+    "import cartopy.crs as ccrs\n",
+    "import cartopy.feature as cfeature\n",
+    "from matplotlib import cm\n",
+    "import matplotlib as mpl\n",
+    "import matplotlib.colors as clr\n",
+    "import matplotlib.path as mpath\n",
+    "import matplotlib.pyplot as plt\n",
+    "import matplotlib.patches as patches\n",
+    "import matplotlib.ticker as mticker # buat ganti tick\n",
+    "import scipy\n",
+    "#import argopy\n",
+    "\n",
+    "%matplotlib inline"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Input data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "oa_raw = xr.open_dataset('OA_lhsh.nc', chunks={'time':1})\n",
+    "noaa_raw = xr.open_dataset('NOAA_lhsh.nc', chunks={'time':1})\n",
+    "ceres_raw = xr.open_dataset('CERES_FULL.nc', chunks={'time':1})"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "oa_raw"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "ceres_raw"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "noaa_raw"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Interpolasi jadi 0.25˚ + samain tanggal"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "lat_target = noaa_raw.lat.values\n",
+    "lon_target = noaa_raw.lon.values"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "# oa hanya perlu interpolasi lat lon\n",
+    "oa = oa_raw.interp(lat=lat_target, lon=lon_target).sel(time=slice('2008-01-01', '2019-06-01'))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# noaa perlu ngurangi tanggal doang\n",
+    "noaa = noaa_raw.sel(time=slice('2008-01-01', '2019-06-01'))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# ceres interpolasi lat lon, adjust tanggal, sama ganti tanggal belakangnya jadi -01\n",
+    "ceres = ceres_raw.interp(lat=lat_target, lon=lon_target).sel(time=slice('2008-01-15', '2019-06-15'))\n",
+    "ceres['time'] = oa.time.values"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Jadiin 1 dataset trus save"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "hf = xr.Dataset({'oa_lh': (('time', 'lat', 'lon'), oa.lh),\n",
+    "                'oa_sh': (('time', 'lat', 'lon'), oa.sh),\n",
+    "                'noaa_lh': (('time', 'lat', 'lon'), noaa.surface_upward_latent_heat_flux),\n",
+    "                'noaa_sh': (('time', 'lat', 'lon'), noaa.surface_upward_sensible_heat_flux),\n",
+    "                'ceres_lwr': (('time', 'lat', 'lon'), ceres.sfc_net_lw_all_mon),\n",
+    "                'ceres_swr': (('time', 'lat', 'lon'), ceres.sfc_net_sw_all_mon)},\n",
+    "                {'time': oa.time,\n",
+    "                 'lat': oa.lat,\n",
+    "                 'lon': oa.lon})"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "hf"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Visualisasi buat ngetest"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fig, axes = plt.subplots(ncols=2, subplot_kw={'projection': ccrs.Mercator()}, figsize=(15,8))\n",
+    "\n",
+    "(hf.ceres_swr + hf.ceres_lwr - hf.oa_sh - hf.oa_lh).sel(time='2011-09-01').plot(ax=axes[0], transform=ccrs.PlateCarree(),\n",
+    "                                    vmin=-150, \n",
+    "                                    vmax=150, \n",
+    "                                    cmap='RdBu_r',\n",
+    "                                    cbar_kwargs={'shrink': 0.5})\n",
+    "\n",
+    "(hf.ceres_swr + hf.ceres_lwr - hf.noaa_sh - hf.noaa_lh).sel(time='2011-09-01').plot(ax=axes[1], transform=ccrs.PlateCarree(),\n",
+    "                                    vmin=-150, \n",
+    "                                    vmax=150, \n",
+    "                                    cmap='RdBu_r',\n",
+    "                                    cbar_kwargs={'shrink': 0.5})\n",
+    "\n",
+    "axes[0].set_title('ceres+oa')\n",
+    "axes[1].set_title('ceres+noaa')\n",
+    "\n",
+    "for ax in axes:\n",
+    "    ax.coastlines()\n",
+    "    gl = ax.gridlines(draw_labels=True)\n",
+    "    ax.add_feature(cfeature.LAND, facecolor='0.8', edgecolor='black')\n",
+    "    gl.xlabels_top = False\n",
+    "    gl.ylabels_right = False"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [],
+   "source": [
+    "fig,ax = plt.subplots(figsize=(11,5), subplot_kw={'projection': ccrs.Mercator()})\n",
+    "\n",
+    "(hf.ceres_swr.sel(time='2010-09-01') + hf.ceres_lwr.sel(time='2010-09-01') - hf.oa_sh.sel(time='2010-09-01') - hf.oa_lh.sel(time='2010-09-01')).plot(ax=ax,\n",
+    "                                                                               transform=ccrs.PlateCarree(),\n",
+    "                                                                               cbar_kwargs={'shrink':0.6})\n",
+    "\n",
+    "extent = [10, 80, 10, -45]\n",
+    "ax.set_title('Ceres (radiative heat) and OA Flux (turbulance heat)')\n",
+    "\n",
+    "ax.coastlines()\n",
+    "gl = ax.gridlines(draw_labels=True)\n",
+    "ax.add_feature(cfeature.LAND, facecolor='0.8', edgecolor='black')\n",
+    "gl.xlabels_top = False\n",
+    "gl.ylabels_right = False\n",
+    "ax.set_extent(extent)\n",
+    "    \n",
+    "plt.tight_layout()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Dah bener lah yaaa. Selanjutnya saving jd 1 file."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#hf.to_netcdf('HeatFlux_FINAL.nc', mode='w')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We done here, go analyze the data."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
